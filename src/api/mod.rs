@@ -4,6 +4,8 @@ pub mod users;
 use chats::load_chat;
 use users::users_router;
 
+use crate::state::AppState;
+
 use axum::{
     Json, Router,
     routing::{get, post},
@@ -31,7 +33,7 @@ async fn api_root() -> Json<ApiRootOutput> {
     Json(data)
 }
 
-pub fn api_router() -> Router {
+pub fn api_router() -> Router<AppState> {
     Router::new()
         .route("/", get(api_root))
         .nest("/users", users_router())

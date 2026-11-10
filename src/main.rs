@@ -1,5 +1,9 @@
 mod api;
+mod database;
+mod state;
+
 use api::api_router;
+use state::AppState;
 
 use axum::{Router, routing::get};
 use std::env;
@@ -7,6 +11,18 @@ use std::env;
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+
+    // Database
+
+    let db = database::connect()
+        .await
+        .expect("Database connection failed!");
+
+    // State
+
+    let state = AppState { db };
+
+    // Networking
 
     let address = env::var("ADDRESS").unwrap_or("0.0.0.0".to_string());
     let port: u16 = env::var("PORT")
@@ -16,7 +32,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
-        .nest("/api", api_router());
+        .nest("/api", api_router())
+        .with_state(state);
 
     let bind_address = format!("{address}:{port}");
 
