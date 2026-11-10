@@ -2,7 +2,7 @@ pub mod chats;
 pub mod users;
 
 use chats::load_chat;
-use users::{create_user, get_data_from_user, login_user};
+use users::users_router;
 
 use axum::{
     Json, Router,
@@ -34,8 +34,6 @@ async fn api_root() -> Json<ApiRootOutput> {
 pub fn api_router() -> Router {
     Router::new()
         .route("/", get(api_root))
-        .route("/users/create_user", post(create_user))
-        .route("/users/login_user", post(login_user))
-        .route("/users/get_data_from_user", post(get_data_from_user))
+        .nest("/users", users_router())
         .route("/chats/{id}", post(load_chat))
 }

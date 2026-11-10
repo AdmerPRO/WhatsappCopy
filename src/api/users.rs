@@ -1,11 +1,20 @@
-pub async fn create_user() -> &'static str {
+use axum::{Router, routing::post};
+
+pub fn users_router() -> Router {
+    Router::new()
+        .route("/create_user", post(create_user))
+        .route("/login_user", post(login_user))
+        .route("/get_data_from_user", post(get_data_from_user))
+}
+
+async fn create_user() -> &'static str {
     "create"
 }
 
-pub async fn login_user() -> &'static str {
+async fn login_user() -> &'static str {
     "login"
 }
 
-pub async fn get_data_from_user() -> &'static str {
+async fn get_data_from_user() -> &'static str {
     "data"
 }
