@@ -1,11 +1,14 @@
-pub mod users;
 pub mod chats;
+pub mod users;
 
-use users::{create_user, login_user, get_data_from_user};
 use chats::load_chat;
+use users::{create_user, get_data_from_user, login_user};
 
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use serde::Serialize;
-use axum::{routing::{get, post}, Router, Json};
 
 #[derive(Serialize)]
 struct ApiRootOutput {
