@@ -5,7 +5,6 @@ mod utils;
 
 use api::api_router;
 use state::AppState;
-use utils::BloomFilter;
 
 use axum::{Router, routing::get};
 use std::env;

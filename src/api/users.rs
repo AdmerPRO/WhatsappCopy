@@ -1,6 +1,5 @@
-use crate::database::User;
 use crate::state::AppState;
-use crate::utils::{hash_password, verify_password};
+use crate::utils::hash_password;
 
 use axum::{
     Json, Router,
@@ -8,10 +7,8 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::PgPool;
-use uuid::Uuid;
 
 #[derive(Deserialize)]
 struct CreateUserInput {
@@ -142,39 +139,48 @@ async fn create_user(
     let hashed_password = hash_password(&password);
 
     let result = sqlx::query("INSERT INTO users (username, email, password) VALUES ($1, $2, $3)")
-        .bind(username)
+        .bind(&username)
         .bind(email)
         .bind(hashed_password)
         .execute(&state.db)
         .await;
 
-    if !result.is_ok() {
+    if let Err(error) = result {
         eprintln!("Database error: {error}");
 
-        Err((
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "success": false,
                 "error": "DATABASE_ERROR"
             })),
-        ))
+        ));
     }
 
     // Update Bloom Filter only after successful INSERT
-    let mut bloom = state.bloom.write().await;
+    let mut bloom = state.bloom.write().map_err(|error| {
+        eprintln!("Failed to lock Bloom Filter: {error}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "success": false,
+                "error": "BLOOM_FILTER_ERROR"
+            })),
+        )
+    })?;
 
     bloom.insert(&username);
 
     if let Err(error) = bloom.save() {
         eprintln!("Failed to save Bloom Filter: {error}");
 
-        Err((
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "success": false,
                 "error": "BLOOM_FILTER_ERROR"
             })),
-        ))
+        ));
     }
 
     Ok(Json(json!({
