@@ -6,10 +6,7 @@ use users::users_router;
 
 use crate::state::AppState;
 
-use axum::{
-    Json, Router,
-    routing::{get, post},
-};
+use axum::{Json, Router, routing::get};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -37,5 +34,5 @@ pub fn api_router() -> Router<AppState> {
     Router::new()
         .route("/", get(api_root))
         .nest("/users", users_router())
-        .route("/chats/{id}", post(load_chat))
+        .route("/chats/{id}", get(load_chat))
 }

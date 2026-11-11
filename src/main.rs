@@ -1,9 +1,11 @@
 mod api;
 mod database;
 mod state;
+mod utils;
 
 use api::api_router;
 use state::AppState;
+use utils::BloomFilter;
 
 use axum::{Router, routing::get};
 use std::env;
@@ -20,7 +22,7 @@ async fn main() {
 
     // State
 
-    let state = AppState { db };
+    let state = AppState::new(db);
 
     // Networking
 
