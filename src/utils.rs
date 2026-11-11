@@ -2,14 +2,18 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-
+use chrono::{Duration, Utc};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use serde::{Deserialize, Serialize};
 use std::{fs, io, path::Path};
+use uuid::Uuid;
 
 // Consts
 
 const BIT_COUNT: usize = 65_534;
 const HASH_COUNT: u64 = 7;
 const FILE_PATH: &str = "username.bloom";
+const TOKEN_DURATION_MINUTES: i64 = 15;
 
 // Hashing passwords
 
@@ -96,4 +100,52 @@ impl BloomFilter {
     pub fn save(&self) -> io::Result<()> {
         fs::write(FILE_PATH, &self.bits)
     }
+}
+
+// Tokens
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Token {
+    pub username: String,
+    pub uuid: Uuid,
+
+    pub created_at: i64,
+
+    pub iat: usize,
+    pub exp: usize,
+}
+
+fn get_jwt_secret() -> String {
+    std::env::var("JWT_SECRET").expect("JWT_SECRET is missing in .env")
+}
+
+pub fn generate_token(username: String, uuid: Uuid) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = Utc::now();
+    let expires_at = now + Duration::minutes(TOKEN_DURATION_MINUTES);
+    let secret = get_jwt_secret();
+
+    let token = Token {
+        username,
+        uuid,
+        created_at: now.timestamp(),
+        iat: now.timestamp() as usize,
+        exp: expires_at.timestamp() as usize,
+    };
+
+    encode(
+        &Header::new(Algorithm::HS256),
+        &token,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+}
+
+pub fn verify_token(token: &str) -> Result<Token, jsonwebtoken::errors::Error> {
+    let secret = get_jwt_secret();
+    let decoded = decode::<Token>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &Validation::new(Algorithm::HS256),
+    )?;
+
+    Ok(decoded.claims)
 }

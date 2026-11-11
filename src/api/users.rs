@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use crate::utils::hash_password;
+use crate::utils::{generate_token, hash_password, verify_password, verify_token};
 
 use axum::{
     Json, Router,
@@ -7,14 +7,53 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use uuid::Uuid;
+
+// Create user
 
 #[derive(Deserialize)]
 struct CreateUserInput {
     username: String,
     password: String,
     email: String,
+}
+
+// Login user with username
+
+#[derive(Deserialize)]
+struct LoginUserInput {
+    username: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct LoginUserOutput {
+    username: String,
+    token: String,
+    expires_at: usize,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct UserLoginData {
+    password: String,
+    uuid: Uuid,
+}
+
+// Login user with token
+
+#[derive(Deserialize)]
+struct LoginTokenInput {
+    username: String,
+    token: String,
+}
+
+#[derive(Serialize)]
+struct LoginTokenOutput {
+    username: String,
+    session: String,
+    expires_at: u64,
 }
 
 // Check if username is valid
@@ -56,14 +95,11 @@ async fn is_username_taken(state: &AppState, name: &str) -> bool {
     }
 
     // Bloom Filter says possibly taken, check database
-    let exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)")
-            .bind(name)
-            .fetch_one(&state.db)
-            .await
-            .unwrap();
-
-    exists
+    sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)")
+        .bind(name)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
 }
 
 // Check if username is available
@@ -122,7 +158,7 @@ async fn create_user(
         ));
     }
 
-    // Check Bloom Filter
+    // Check if username is taken
     let taken = is_username_taken(&state, &username).await;
 
     if taken {
@@ -137,6 +173,7 @@ async fn create_user(
 
     // TODO: release password variable somehow
     let hashed_password = hash_password(&password);
+    drop(password);
 
     let result = sqlx::query("INSERT INTO users (username, email, password) VALUES ($1, $2, $3)")
         .bind(&username)
@@ -172,7 +209,7 @@ async fn create_user(
     bloom.insert(&username);
 
     if let Err(error) = bloom.save() {
-        eprintln!("Failed to save Bloom Filter: {error}");
+        eprintln!("Failed to save Bloom Filter: {error} , Username: {username}");
 
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -183,6 +220,8 @@ async fn create_user(
         ));
     }
 
+    drop(username);
+
     Ok(Json(json!({
         "success": true,
         "message": "User created"
@@ -190,9 +229,121 @@ async fn create_user(
 }
 
 // Logs in the user
-async fn login_user() -> &'static str {
-    "login"
+async fn login_user_with_username(
+    State(state): State<AppState>,
+    Json(user): Json<LoginUserInput>,
+) -> Result<Json<LoginUserOutput>, (StatusCode, Json<Value>)> {
+    let username = user.username;
+    let password = user.password;
+
+    // Validate username
+    if !is_username_valid(&username) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_USERNAME",
+                "message": "Username contains invalid characters"
+            })),
+        ));
+    }
+
+    // Validate password
+    if !is_password_valid(&password) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_PASSWORD",
+                "message": "Password contains invalid characters"
+            })),
+        ));
+    }
+
+    let user_db =
+        sqlx::query_as::<_, UserLoginData>("SELECT password, uuid FROM users WHERE username = $1")
+            .bind(&username)
+            .fetch_optional(&state.db)
+            .await;
+
+    let (password_db, uuid_db) = match user_db {
+        Ok(Some(user)) => (user.password, user.uuid),
+
+        Ok(None) => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "INVALID_CREDENTIALS",
+                    "message": "Invalid username or password."
+                })),
+            ));
+        }
+
+        Err(error) => {
+            eprintln!("Database error: {error}");
+
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": "DATABASE_ERROR"
+                })),
+            ));
+        }
+    };
+
+    let valid_password = verify_password(&password, &password_db);
+
+    drop(password);
+    drop(password_db);
+
+    if !valid_password {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "INVALID_CREDENTIALS",
+                "message": "Invalid username or password."
+            })),
+        ));
+    }
+
+    let token = generate_token(username.clone(), uuid_db).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "TOKEN_GENERATION_FAILED"
+            })),
+        )
+    })?;
+
+    let token_as_struct = verify_token(&token).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "TOKEN_VERIFICATION_FAILED"
+            })),
+        )
+    })?;
+
+    let expires_at = token_as_struct.exp;
+
+    Ok(Json(LoginUserOutput {
+        username,
+        token,
+        expires_at,
+    }))
 }
+
+async fn login_user_with_token(
+    State(state): State<AppState>,
+    Json(user): Json<LoginTokenInput>,
+) -> Result<Json<LoginTokenOutput>, (StatusCode, Json<Value>)> {
+    Ok(Json(LoginTokenOutput {
+        username: "abc".to_string(),
+        session: "abc123".to_string(),
+        expires_at: 123456789,
+    }))
+}
+
+// Todo: login_user_with_email
 
 // Gets data from database about user
 async fn get_data_from_user() -> &'static str {
@@ -203,7 +354,8 @@ async fn get_data_from_user() -> &'static str {
 pub fn users_router() -> Router<AppState> {
     Router::new()
         .route("/create_user", post(create_user))
-        .route("/login_user", post(login_user))
+        .route("/login_user_username", post(login_user_with_username))
+        .route("/login_user_token", post(login_user_with_token))
         .route("/get_data_from_user", post(get_data_from_user))
         .route("/check_username/{name}", get(check_username))
 }
