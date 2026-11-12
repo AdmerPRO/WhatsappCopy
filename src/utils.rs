@@ -2,9 +2,11 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{fs, io, path::Path};
 use uuid::Uuid;
 
@@ -148,4 +150,18 @@ pub fn verify_token(token: &str) -> Result<Token, jsonwebtoken::errors::Error> {
     )?;
 
     Ok(decoded.claims)
+}
+
+// Sesions
+
+pub fn generate_session_id() -> String {
+    let random_bytes: [u8; 32] = rand::random();
+
+    URL_SAFE_NO_PAD.encode(random_bytes)
+}
+
+pub fn hash_session_id(session_id: &str) -> String {
+    let hash = Sha256::digest(session_id.as_bytes());
+
+    hex::encode(hash)
 }

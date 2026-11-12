@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use crate::utils::{generate_token, hash_password, verify_password, verify_token};
+use crate::utils::{generate_token, hash_password, verify_password, verify_token, generate_session_id, hash_session_id};
 
 use axum::{
     Json, Router,
@@ -10,6 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
+use chrono::Utc;
 
 // Create user
 
@@ -336,10 +337,72 @@ async fn login_user_with_token(
     State(state): State<AppState>,
     Json(user): Json<LoginTokenInput>,
 ) -> Result<Json<LoginTokenOutput>, (StatusCode, Json<Value>)> {
+
+    let username = user.username;
+    let token = user.token;
+
+    // Validate username
+    if !is_username_valid(&username) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_USERNAME",
+                "message": "Username contains invalid characters"
+            })),
+        ));
+    }
+
+    let token_as_struct = verify_token(&token).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "TOKEN_VERIFICATION_FAILED"
+            })),
+        )
+    })?;
+
+    let now = Utc::now().timestamp() as usize;
+    let expires_at = token_as_struct.exp;
+
+    if expires_at >= now {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "TOKEN_INACTIVE",
+                "message": "Token is inactive"
+            }))
+        ));
+    }
+
+    let session = generate_session_id();
+    let session_hash = hash_session_id(&session);
+    let expires_at = chrono::Utc::now().timestamp() + 15 * 60;
+
+    let result = sqlx::query("INSERT INTO sessions (username, session_hash, ip_address, user_agent, expires_at) VALUES ($1, $2, $3, $4)")
+        .bind(&username)
+        .bind(session_hash)
+        .bind("0.0.0.0") // Todo: Add real user ip
+        .bind("Mozilla") // Todo: Add real user agent
+        .bind(&expires_at)
+        .execute(&state.db)
+        .await;
+
+    if let Err(error) = result {
+        eprintln!("Database error: {error}");
+
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "success": false,
+                "error": "DATABASE_ERROR"
+            })),
+        ));
+    }
+
     Ok(Json(LoginTokenOutput {
-        username: "abc".to_string(),
-        session: "abc123".to_string(),
-        expires_at: 123456789,
+        username: username,
+        session: session,
+        expires_at: expires_at as u64,
     }))
 }
 
