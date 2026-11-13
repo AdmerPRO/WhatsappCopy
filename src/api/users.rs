@@ -1,5 +1,8 @@
 use crate::state::AppState;
-use crate::utils::{generate_token, hash_password, verify_password, verify_token, generate_session_id, hash_session_id};
+use crate::utils::{
+    generate_session_id, generate_token, hash_password, hash_session_id, verify_password,
+    verify_token,
+};
 
 use axum::{
     Json, Router,
@@ -7,15 +10,15 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
-use chrono::Utc;
 
 // Create user
 
 #[derive(Deserialize)]
-struct CreateUserInput {
+struct CreateUserInputData {
     username: String,
     password: String,
     email: String,
@@ -24,34 +27,51 @@ struct CreateUserInput {
 // Login user with username
 
 #[derive(Deserialize)]
-struct LoginUserInput {
+struct LoginUserUsernameInputData {
     username: String,
     password: String,
 }
 
 #[derive(Serialize)]
-struct LoginUserOutput {
+struct LoginUserUsernameOutputData {
     username: String,
     token: String,
     expires_at: usize,
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct UserLoginData {
+struct DatabaseUsernameLoginData {
     password: String,
     uuid: Uuid,
+}
+
+// Login user with email
+
+#[derive(Deserialize)]
+struct LoginUserEmailInputData {
+    email: String,
+    password: String,
+}
+
+type LoginUserEmailOutputData = LoginUserUsernameOutputData;
+
+#[derive(Debug, sqlx::FromRow)]
+struct DatabaseEmailLoginData {
+    password: String,
+    uuid: Uuid,
+    username: String,
 }
 
 // Login user with token
 
 #[derive(Deserialize)]
-struct LoginTokenInput {
+struct LoginUserTokenInputData {
     username: String,
     token: String,
 }
 
 #[derive(Serialize)]
-struct LoginTokenOutput {
+struct LoginUserTokenOutputData {
     username: String,
     session: String,
     expires_at: u64,
@@ -120,7 +140,7 @@ async fn check_username(
 // Creates a user
 async fn create_user(
     State(state): State<AppState>,
-    Json(user): Json<CreateUserInput>,
+    Json(user): Json<CreateUserInputData>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let username = user.username;
     let password = user.password;
@@ -229,11 +249,11 @@ async fn create_user(
     })))
 }
 
-// Logs in the user
+// Logs in the user using username
 async fn login_user_with_username(
     State(state): State<AppState>,
-    Json(user): Json<LoginUserInput>,
-) -> Result<Json<LoginUserOutput>, (StatusCode, Json<Value>)> {
+    Json(user): Json<LoginUserUsernameInputData>,
+) -> Result<Json<LoginUserUsernameOutputData>, (StatusCode, Json<Value>)> {
     let username = user.username;
     let password = user.password;
 
@@ -259,11 +279,12 @@ async fn login_user_with_username(
         ));
     }
 
-    let user_db =
-        sqlx::query_as::<_, UserLoginData>("SELECT password, uuid FROM users WHERE username = $1")
-            .bind(&username)
-            .fetch_optional(&state.db)
-            .await;
+    let user_db = sqlx::query_as::<_, DatabaseUsernameLoginData>(
+        "SELECT password, uuid FROM users WHERE username = $1",
+    )
+    .bind(&username)
+    .fetch_optional(&state.db)
+    .await;
 
     let (password_db, uuid_db) = match user_db {
         Ok(Some(user)) => (user.password, user.uuid),
@@ -292,9 +313,6 @@ async fn login_user_with_username(
     };
 
     let valid_password = verify_password(&password, &password_db);
-
-    drop(password);
-    drop(password_db);
 
     if !valid_password {
         return Err((
@@ -326,18 +344,120 @@ async fn login_user_with_username(
 
     let expires_at = token_as_struct.exp;
 
-    Ok(Json(LoginUserOutput {
+    Ok(Json(LoginUserUsernameOutputData {
         username,
         token,
         expires_at,
     }))
 }
 
+// Logs in the user with email
+async fn login_user_with_email(
+    State(state): State<AppState>,
+    Json(user): Json<LoginUserEmailInputData>,
+) -> Result<Json<LoginUserEmailOutputData>, (StatusCode, Json<Value>)> {
+    let email = user.email;
+    let password = user.password;
+
+    // Validate email
+    if !is_email_valid(&email) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_EMAIL",
+                "message": "Email contains invalid characters"
+            })),
+        ));
+    }
+
+    // Validate password
+    if !is_password_valid(&password) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "INVALID_PASSWORD",
+                "message": "Password contains invalid characters"
+            })),
+        ));
+    }
+
+    let user_db = sqlx::query_as::<_, DatabaseEmailLoginData>(
+        "SELECT password, uuid, username FROM users WHERE email = $1",
+    )
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await;
+
+    let (password_db, uuid_db, username) = match user_db {
+        Ok(Some(user)) => (user.password, user.uuid, user.username),
+
+        Ok(None) => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "INVALID_CREDENTIALS",
+                    "message": "Invalid email or password."
+                })),
+            ));
+        }
+
+        Err(error) => {
+            eprintln!("Database error: {error}");
+
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": "DATABASE_ERROR"
+                })),
+            ));
+        }
+    };
+
+    let valid_password = verify_password(&password, &password_db);
+
+    if !valid_password {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "INVALID_CREDENTIALS",
+                "message": "Invalid email or password."
+            })),
+        ));
+    }
+
+    let token = generate_token(username.clone(), uuid_db).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "TOKEN_GENERATION_FAILED"
+            })),
+        )
+    })?;
+
+    let token_as_struct = verify_token(&token).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "TOKEN_VERIFICATION_FAILED"
+            })),
+        )
+    })?;
+
+    let expires_at = token_as_struct.exp;
+
+    Ok(Json(LoginUserEmailOutputData {
+        username,
+        token,
+        expires_at,
+    }))
+}
+
+// Logs in he user with token
 async fn login_user_with_token(
     State(state): State<AppState>,
-    Json(user): Json<LoginTokenInput>,
-) -> Result<Json<LoginTokenOutput>, (StatusCode, Json<Value>)> {
-
+    Json(user): Json<LoginUserTokenInputData>,
+) -> Result<Json<LoginUserTokenOutputData>, (StatusCode, Json<Value>)> {
     let username = user.username;
     let token = user.token;
 
@@ -370,7 +490,7 @@ async fn login_user_with_token(
             Json(json!({
                 "error": "TOKEN_INACTIVE",
                 "message": "Token is inactive"
-            }))
+            })),
         ));
     }
 
@@ -399,14 +519,12 @@ async fn login_user_with_token(
         ));
     }
 
-    Ok(Json(LoginTokenOutput {
+    Ok(Json(LoginUserTokenOutputData {
         username: username,
         session: session,
         expires_at: expires_at as u64,
     }))
 }
-
-// Todo: login_user_with_email
 
 // Gets data from database about user
 async fn get_data_from_user() -> &'static str {
@@ -418,6 +536,7 @@ pub fn users_router() -> Router<AppState> {
     Router::new()
         .route("/create_user", post(create_user))
         .route("/login_user_username", post(login_user_with_username))
+        .route("/login_user_email", post(login_user_with_email))
         .route("/login_user_token", post(login_user_with_token))
         .route("/get_data_from_user", post(get_data_from_user))
         .route("/check_username/{name}", get(check_username))
